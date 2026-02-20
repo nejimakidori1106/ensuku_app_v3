@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>エンスクセオリー問題集</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app">
+    <!-- Title -->
+    <section id="screen-title" class="screen">
+      <div class="title-wrap">
+        <img class="title-image" src="assets/title.png" alt="エンスクセオリー問題集" />
+        <button id="btn-start" class="btn btn-primary btn-start" type="button">はじめる</button>
+        <button id="btn-list" class="btn btn-secondary btn-start" type="button">問題一覧</button>
+      </div>
+    </section>
+
+    <!-- List -->
+    <section id="screen-list" class="screen hidden">
+      <header class="topbar">
+        <div class="progress">問題一覧</div>
+        <button id="btn-list-back" class="btn btn-ghost" type="button">タイトルに戻る</button>
+      </header>
+
+      <div class="card list-card">
+        <div id="list-container" class="list-container"></div>
+      </div>
+    </section>
+
+    <!-- Quiz -->
+    <section id="screen-quiz" class="screen hidden">
+      <header class="topbar">
+        <div id="progress" class="progress"></div>
+      </header>
+
+      <div class="card">
+        <div id="prompt" class="prompt"></div>
+
+        <div class="qimg-wrap">
+          <img id="q-image" class="q-image" alt="問題画像" />
+          <button id="btn-qimg" class="btn btn-ghost btn-zoom" type="button">拡大</button>
+        </div>
+      </div>
+
+      <div id="choices" class="choices"></div>
+    </section>
+
+    <!-- Result / Explanation -->
+    <section id="screen-result" class="screen hidden">
+      <header class="topbar">
+        <div id="progress2" class="progress"></div>
+        <button id="btn-home" class="btn btn-ghost" type="button">タイトルに戻る</button>
+      </header>
+
+      <div class="card result-card">
+        <div id="result-badge" class="result-badge"></div>
+
+        <div class="result-row">
+          <div class="result-label">正解</div>
+          <div id="correct-choice" class="result-value"></div>
+        </div>
+
+        <div class="result-row">
+          <div class="result-label">あなたの回答</div>
+          <div id="your-choice" class="result-value"></div>
+        </div>
+      </div>
+
+      <div class="card explain-card">
+        <div id="explain-text" class="explain-text"></div>
+
+        <button id="btn-more" class="btn btn-secondary hidden" type="button">もっと詳しく</button>
+        <div id="supplement" class="supplement hidden"></div>
+
+        <div id="explain-media" class="explain-media"></div>
+      </div>
+
+      <button id="btn-next" class="btn btn-primary btn-next" type="button">次の問題へ</button>
+    </section>
+
+    <!-- Modal -->
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="画像拡大">
+      <div class="modal-backdrop" id="modal-backdrop"></div>
+      <div class="modal-sheet">
+        <div class="modal-head">
+          <div id="modal-title" class="modal-title"></div>
+          <button id="modal-close" class="btn btn-ghost" type="button">閉じる</button>
+        </div>
+        <img id="modal-img" class="modal-img" alt="拡大画像" />
+      </div>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
