@@ -11,10 +11,19 @@
     <!-- Title -->
     <section id="screen-title" class="screen">
       <div class="title-wrap">
-        <img class="title-image" src="assets/title.png" alt="エンスクセオリー問題集" />
-        <button id="btn-start" class="btn btn-primary btn-start" type="button">はじめる</button>
+        <img class="title-image" src="assets/title.png" alt="エンスクセオリー問題集" decoding="async" />
+        
+        <div id="title-progress" class="title-progress" aria-live="polite"></div>
+        <div id="title-notice" class="title-notice hidden" aria-live="polite"></div>
+<button id="btn-start" class="btn btn-primary btn-start" type="button">はじめる（ランダム出題）</button>
+        <button id="btn-continue" class="btn btn-secondary btn-start" type="button">つづきから</button>
+        <button id="btn-wrong" class="btn btn-secondary btn-start" type="button">不正解だけを再出題</button>
         <button id="btn-list" class="btn btn-secondary btn-start" type="button">問題一覧</button>
-      </div>
+      
+        <div class="title-subhead">データ管理</div>
+        <button id="btn-reset-correct" class="btn btn-secondary btn-start btn-hold" type="button">正解済をリセット</button>
+        <button id="btn-clear-wrong" class="btn btn-secondary btn-start btn-hold" type="button">不正解をリセット</button>
+</div>
     </section>
 
     <!-- List -->
@@ -25,6 +34,21 @@
       </header>
 
       <div class="card list-card">
+        
+        <div class="list-tools">
+          <div class="list-legend" aria-label="ステータス凡例">
+            <span class="legend-item"><span class="status status-unanswered">●</span><span class="legend-text">未回答</span></span>
+            <span class="legend-item"><span class="status status-correct">✓</span><span class="legend-text">正解済</span></span>
+            <span class="legend-item"><span class="status status-wrong">!</span><span class="legend-text">不正解</span></span>
+          </div>
+          <div class="list-filters" role="group" aria-label="絞り込み">
+            <button id="filter-all" class="btn btn-filter is-active" type="button">全部</button>
+            <button id="filter-wrong" class="btn btn-filter" type="button">不正解</button>
+            <button id="filter-unanswered" class="btn btn-filter" type="button">未回答</button>
+            <button id="filter-correct" class="btn btn-filter" type="button">正解済</button>
+          </div>
+        </div>
+
         <div id="list-container" class="list-container"></div>
       </div>
     </section>
@@ -33,6 +57,7 @@
     <section id="screen-quiz" class="screen hidden">
       <header class="topbar">
         <div id="progress" class="progress"></div>
+        <button id="btn-quiz-home" class="btn btn-ghost" type="button">タイトルに戻る</button>
       </header>
 
       <div class="card">
@@ -77,7 +102,21 @@
         <div id="explain-media" class="explain-media"></div>
       </div>
 
+      <div id="wrong-done" class="wrong-done hidden">不正解リストが空になったよ。ナイス！</div>
+
       <button id="btn-next" class="btn btn-primary btn-next" type="button">次の問題へ</button>
+    </section>
+
+
+
+    <!-- Clear -->
+    <section id="screen-clear" class="screen hidden">
+      <div class="title-wrap">
+        <img class="title-image" src="assets/clear.png" alt="クリア画像" decoding="async" />
+        <div class="clear-msg">全問正解、おめでとう！</div>
+        <button id="btn-clear-home" class="btn btn-primary btn-start" type="button">タイトルに戻る</button>
+        <button id="btn-clear-reset" class="btn btn-secondary btn-start" type="button">最初から（正解済をリセット）</button>
+      </div>
     </section>
 
     <!-- Modal -->

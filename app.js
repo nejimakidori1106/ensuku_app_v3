@@ -427,7 +427,7 @@ const QUESTIONS = [
     "serial": 17,
     "theoryNo": 8,
     "problemNo": 1,
-    "prompt": "対面のリーチが入っています。\nどうする？",
+    "prompt": "ラス前、対面のリーチが入っています。\nどうする？",
     "question_image": "assets/questions/qo8-1.png",
     "choices": [
       "打[6m]リーチ",
@@ -879,7 +879,7 @@ const QUESTIONS = [
       "打[W]"
     ],
     "answer": "打[W]",
-    "supplement": "",
+    "supplement": "【赤】00物件（0面子0両面）【/赤】のときは別！\n00物件の配牌は手なり（面前リーチ手順）に打たず、【赤】手役【/赤】に寄せたり【赤】安牌の確保【/赤】を意識しよう！",
     "question_image": "assets/questions/qt12-1.png",
     "explain_images": [
       {
@@ -888,7 +888,7 @@ const QUESTIONS = [
         "file": "at12-1.png"
       }
     ],
-    "explain_text": "《手組セオリー》\n【赤】配牌20枚理論【/赤】\n【赤】6巡目【/赤】までは勝手に手牌に見切りをつけるな。\n【赤】6巡目【/赤】までは配牌だと思え。\n配牌14枚で手牌を判断してしまうと、手牌の進化の可能性を見落としてしまう。\n【赤】配牌20枚（14枚+6巡のツモ）【/赤】で戦って、配牌14～16枚程度で戦ってる奴らに無双しよう。",
+    "explain_text": "《手組セオリー》\n【赤】配牌20枚理論【/赤】\n【赤】6巡目【/赤】までは勝手に手牌に見切りをつけるな。\n【赤】6巡目【/赤】までは配牌だと思え。\n配牌14枚で手牌を判断してしまうと、手牌の進化の可能性を見落としてしまう。\n【赤】配牌20枚（14枚+6巡のツモ）【/赤】で戦って、配牌14～16枚程度で戦ってる奴らに無双しよう。\n\nブロックが揃うまでは基本序列通りに！",
     "prompt": "何切る？"
   },
   {
@@ -1389,7 +1389,7 @@ const QUESTIONS = [
     "theoryNo": 32,
     "problemNo": 1,
     "choices": [
-      "打[2s]",
+      "打[1s]",
       "打[W]",
       "打[F]"
     ],
@@ -1440,20 +1440,432 @@ const HONOR_MAP = {
 };
 
 let state = {
+  mode: "all",
   idx: 0,
   selected: null,
+  // 重複なしランダム（1周シャッフル）用
+  order: null,
+  pos: 0,
+  // 全問正解クリア（画像表示）用
+  clearReady: false,
+  // Result screen "next" button behavior
+  nextAction: "next",
+  // Problem list filter
+  listFilter: "all",
 };
+
+
+// Image preloading (small UX boost on mobile)
+const PRELOADED_SRCS = new Set();
+
+function preloadImage(src){
+  if(!src || PRELOADED_SRCS.has(src)) return;
+  PRELOADED_SRCS.add(src);
+  const img = new Image();
+  try{ img.decoding = "async"; } catch(e){}
+  img.src = src;
+}
+
+function getNextIdxForPreload(){
+  // Prefer the actual next question in the current run (when available)
+  if(state.mode === "wrong"){
+    const remaining = new Set(getWrongIndices());
+    if(remaining.size === 0) return null;
+
+    if(Array.isArray(state.order) && Number.isFinite(state.pos)){
+      for(let p = state.pos + 1; p < state.order.length; p++){
+        const idx = state.order[p];
+        if(remaining.has(idx)) return idx;
+      }
+    }
+    // Fallback: any remaining (avoid current if possible)
+    for(const idx of remaining){
+      if(idx !== state.idx) return idx;
+    }
+    return null;
+  }
+
+  if(Array.isArray(state.order) && Number.isFinite(state.pos)){
+    const nextPos = state.pos + 1;
+    if(nextPos >= 0 && nextPos < state.order.length){
+      return state.order[nextPos];
+    }
+  }
+  return null;
+}
+
+function preloadNextQuestionImage(){
+  const nextIdx = getNextIdxForPreload();
+  if(nextIdx == null) return;
+  const q = QUESTIONS[nextIdx];
+  if(q && q.question_image) preloadImage(q.question_image);
+}
+
+
+function makeShuffledOrder(n){
+  const a = Array.from({length:n}, (_,i)=>i);
+  for (let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function shuffleIndices(indices){
+  const a = Array.from(indices || []);
+  for (let i=a.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+
+// === Continue (つづきから) ===
+// Store shuffle order + position in localStorage.
+// Safety: if questions change, old progress is ignored.
+const STORAGE_KEY = "ensuku_shuffle_progress_v1";
+const NOTICE_PROGRESS_RESET_KEY = "ensuku_notice_progress_reset_v1";
+
+function getQuestionSignature(){
+  // Keep it simple & stable: list of ids (fallback: serial)
+  return QUESTIONS.map(q => String((q && (q.id ?? q.serial)) ?? "")).join("|");
+}
+const QUESTION_SIGNATURE = getQuestionSignature();
+
+/* === Wrong answers memory (不正解リスト) ===
+   Store incorrect questions by "serial" (通し番号) in localStorage.
+   Rules:
+   - If answered wrong at least once => in the list.
+   - If answered correct once later => removed from the list.
+   - If question set changes => old list is ignored (sig mismatch).
+*/
+const WRONG_KEY = "ensuku_wrong_serials_v1";
+
+const VALID_SERIALS = new Set(
+  QUESTIONS.map(q => Number(q && q.serial)).filter(n => Number.isFinite(n))
+);
+
+const SERIAL_TO_INDEX = new Map();
+QUESTIONS.forEach((q, i) => {
+  const s = Number(q && q.serial);
+  if (Number.isFinite(s)) SERIAL_TO_INDEX.set(s, i);
+});
+
+function loadWrongSerials(){
+  try{
+    const raw = localStorage.getItem(WRONG_KEY);
+    if(!raw) return new Set();
+    const obj = JSON.parse(raw);
+    if(!obj || obj.v !== 1) return new Set();
+    if(obj.sig !== QUESTION_SIGNATURE) return new Set();
+    const arr = Array.isArray(obj.serials) ? obj.serials : [];
+    const out = new Set();
+    for(const v of arr){
+      const n = Number(v);
+      if(Number.isFinite(n) && VALID_SERIALS.has(n)) out.add(n);
+    }
+    return out;
+  }catch(_e){
+    return new Set();
+  }
+}
+
+function saveWrongSerials(){
+  try{
+    const arr = Array.from(WRONG_SERIALS).filter(n => VALID_SERIALS.has(n)).sort((a,b)=>a-b);
+    const payload = { v: 1, sig: QUESTION_SIGNATURE, serials: arr, ts: Date.now() };
+    localStorage.setItem(WRONG_KEY, JSON.stringify(payload));
+  }catch(_e){
+    // ignore
+  }
+}
+
+let WRONG_SERIALS = loadWrongSerials();
+
+function addWrongSerial(serial){
+  const s = Number(serial);
+  if(!Number.isFinite(s) || !VALID_SERIALS.has(s)) return;
+  if(!WRONG_SERIALS.has(s)){
+    WRONG_SERIALS.add(s);
+    saveWrongSerials();
+  }
+}
+
+function removeWrongSerial(serial){
+  const s = Number(serial);
+  if(!Number.isFinite(s)) return;
+  if(WRONG_SERIALS.delete(s)){
+    saveWrongSerials();
+  }
+}
+
+function getWrongIndices(){
+  const idxs = [];
+  for(const s of WRONG_SERIALS){
+    const i = SERIAL_TO_INDEX.get(s);
+    if(Number.isInteger(i) && i >= 0 && i < QUESTIONS.length) idxs.push(i);
+  }
+  return idxs;
+}
+
+/* === Correct answers memory (全問正解判定) ===
+   Store correct questions by "serial" (通し番号) in localStorage.
+   Rules:
+   - If answered correct at least once => in the set.
+   - It stays correct even if later answered wrong ("1回でも正解" でOK).
+   - If question set changes => old set is ignored (sig mismatch).
+*/
+const CORRECT_KEY = "ensuku_correct_serials_v1";
+
+function loadCorrectSerials(){
+  try{
+    const raw = localStorage.getItem(CORRECT_KEY);
+    if(!raw) return new Set();
+    const obj = JSON.parse(raw);
+    if(!obj || obj.v !== 1) return new Set();
+    if(obj.sig !== QUESTION_SIGNATURE) return new Set();
+    const arr = Array.isArray(obj.serials) ? obj.serials : [];
+    const out = new Set();
+    for(const v of arr){
+      const n = Number(v);
+      if(Number.isFinite(n) && VALID_SERIALS.has(n)) out.add(n);
+    }
+    return out;
+  }catch(_e){
+    return new Set();
+  }
+}
+
+function saveCorrectSerials(){
+  try{
+    const arr = Array.from(CORRECT_SERIALS).filter(n => VALID_SERIALS.has(n)).sort((a,b)=>a-b);
+    const payload = { v: 1, sig: QUESTION_SIGNATURE, serials: arr, ts: Date.now() };
+    localStorage.setItem(CORRECT_KEY, JSON.stringify(payload));
+  }catch(_e){
+    // ignore
+  }
+}
+
+let CORRECT_SERIALS = loadCorrectSerials();
+
+function addCorrectSerial(serial){
+  const s = Number(serial);
+  if(!Number.isFinite(s) || !VALID_SERIALS.has(s)) return;
+  if(!CORRECT_SERIALS.has(s)){
+    CORRECT_SERIALS.add(s);
+    saveCorrectSerials();
+  }
+}
+
+function clearCorrectSerials(){
+  CORRECT_SERIALS = new Set();
+  try{ localStorage.removeItem(CORRECT_KEY); }catch(_e){}
+}
+
+function isAllCorrect(){
+  // Need all questions' serials to be present
+  return CORRECT_SERIALS.size === VALID_SERIALS.size;
+}
+
+
+
+function isValidOrder(order){
+  if(!Array.isArray(order) || order.length !== QUESTIONS.length) return false;
+  const seen = new Set();
+  for(const v of order){
+    if(!Number.isInteger(v) || v < 0 || v >= QUESTIONS.length) return false;
+    if(seen.has(v)) return false;
+    seen.add(v);
+  }
+  return true;
+}
+
+function saveShuffleProgress(){
+  try{
+    if(!isValidOrder(state.order)) return;
+    const payload = { v: 1, sig: QUESTION_SIGNATURE, order: state.order, pos: state.pos, wrap: false, ts: Date.now() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  }catch(_e){
+    // ignore (private mode etc.)
+  }
+}
+
+// When user has reached the result/explanation screen, we want "continue" to resume from the *next* question.
+// This avoids repeating the same already-reviewed question after returning to title.
+function saveNextShuffleProgress(){
+  try{
+    if(!isValidOrder(state.order)) return;
+    const len = state.order.length;
+    let nextPos = state.pos + 1;
+    let wrap = false;
+    if(nextPos >= len){
+      nextPos = 0;
+      wrap = true; // next resume should start a fresh shuffle
+    }
+    const payload = { v: 1, sig: QUESTION_SIGNATURE, order: state.order, pos: nextPos, wrap, ts: Date.now() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  }catch(_e){
+    // ignore
+  }
+}
+
+function clearShuffleProgress(){
+  try{ localStorage.removeItem(STORAGE_KEY); }catch(_e){}
+}
+
+function loadShuffleProgress(){
+  // Returns progress object or null. If stored data exists but is invalid/outdated,
+  // we auto-clear it and show a one-time notice on the title screen.
+  let hadRaw = false;
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return null;
+    hadRaw = true;
+
+    const obj = JSON.parse(raw);
+    if(!obj || obj.v !== 1) throw new Error("bad v");
+    if(obj.sig !== QUESTION_SIGNATURE) throw new Error("sig mismatch");
+    if(!isValidOrder(obj.order)) throw new Error("bad order");
+
+    const pos = obj.pos;
+    if(!Number.isInteger(pos) || pos < 0 || pos >= obj.order.length) throw new Error("bad pos");
+
+    const wrap = !!obj.wrap;
+    return { order: obj.order, pos, wrap };
+  }catch(_e){
+    if(hadRaw){
+      // Auto-reset invalid/outdated progress
+      try{ localStorage.removeItem(STORAGE_KEY); }catch(__e){}
+      markProgressResetNotice();
+    }
+    return null;
+  }
+}
+
+
+function applyShuffleProgress(p){
+  if(!p || !isValidOrder(p.order)) return false;
+  // If the saved progress indicates a wrap, start a fresh shuffle run.
+  if(p.wrap){
+    state.order = makeShuffledOrder(QUESTIONS.length);
+    state.pos = 0;
+    state.idx = state.order[0] ?? 0;
+    saveShuffleProgress();
+    return true;
+  }
+  state.order = p.order;
+  state.pos = p.pos;
+  state.idx = state.order[state.pos] ?? 0;
+  return true;
+}
+
+function startShuffleRun(){
+  state.order = makeShuffledOrder(QUESTIONS.length);
+  state.pos = 0;
+  state.idx = state.order[0] ?? 0;
+  saveShuffleProgress();
+}
+
+function nextInShuffleRun(){
+  if (!Array.isArray(state.order) || state.order.length !== QUESTIONS.length){
+    startShuffleRun();
+    return;
+  }
+  state.pos += 1;
+  if (state.pos >= state.order.length){
+    // 1周したらもう一回シャッフルして続行
+    state.order = makeShuffledOrder(QUESTIONS.length);
+    state.pos = 0;
+  }
+  state.idx = state.order[state.pos];
+  saveShuffleProgress();
+}
+
+function startWrongRun(){
+  // Always start fresh (no "continue") for wrong-only mode.
+  WRONG_SERIALS = loadWrongSerials();
+  const idxs = getWrongIndices();
+  if(idxs.length === 0){
+    alert("不正解の問題がありません。");
+    showScreen("title");
+    return false;
+  }
+  state.mode = "wrong";
+  state.order = shuffleIndices(idxs);
+  state.pos = 0;
+  state.idx = state.order[0] ?? idxs[0] ?? 0;
+  return true;
+}
+
+function nextInWrongRun(){
+  // Skip questions that are no longer in the wrong-list.
+  WRONG_SERIALS = loadWrongSerials();
+  const remaining = new Set(getWrongIndices());
+
+  if(remaining.size === 0){
+    // Completed all wrong questions: end wrong-only mode.
+    state.mode = "all";
+    state.order = null;
+    state.pos = 0;
+    state.idx = 0;
+    return false;
+  }
+
+  // Advance within current cycle, skipping removed questions
+  if(!Array.isArray(state.order)) state.order = shuffleIndices(Array.from(remaining));
+  let p = state.pos + 1;
+  while(p < state.order.length && !remaining.has(state.order[p])) p++;
+
+  if(p < state.order.length){
+    state.pos = p;
+    state.idx = state.order[state.pos];
+    return true;
+  }
+
+  // End of cycle: start a new shuffled cycle with remaining wrong questions
+  state.order = shuffleIndices(Array.from(remaining));
+  state.pos = 0;
+  state.idx = state.order[0];
+  return true;
+}
+
+function nextInCurrentRun(){
+  if(state.mode === "wrong") return nextInWrongRun();
+  nextInShuffleRun();
+  return true;
+}
+
+
+function syncPosFromIdx(){
+  if (Array.isArray(state.order)){
+    const p = state.order.indexOf(state.idx);
+    if (p >= 0) state.pos = p;
+  }
+}
 
 const elTitle = document.getElementById("screen-title");
 const elList = document.getElementById("screen-list");
 const elQuiz = document.getElementById("screen-quiz");
 const elResult = document.getElementById("screen-result");
+const elClear = document.getElementById("screen-clear");
 
 const elBtnStart = document.getElementById("btn-start");
+const elBtnContinue = document.getElementById("btn-continue");
+const elBtnWrong = document.getElementById("btn-wrong");
 const elBtnList = document.getElementById("btn-list");
 const elBtnListBack = document.getElementById("btn-list-back");
+const elBtnResetCorrect = document.getElementById("btn-reset-correct");
+const elBtnClearWrong = document.getElementById("btn-clear-wrong");
+const elTitleProgress = document.getElementById("title-progress");
+const elTitleNotice = document.getElementById("title-notice");
 const elBtnNext = document.getElementById("btn-next");
+const elWrongDone = document.getElementById("wrong-done");
 const elBtnHome = document.getElementById("btn-home");
+const elBtnQuizHome = document.getElementById("btn-quiz-home");
+
+const elBtnClearHome = document.getElementById("btn-clear-home");
+const elBtnClearReset = document.getElementById("btn-clear-reset");
 const elProgress = document.getElementById("progress");
 const elPrompt = document.getElementById("prompt");
 const elProgress2 = document.getElementById("progress2");
@@ -1474,6 +1886,12 @@ const elSupplement = document.getElementById("supplement");
 /* list */
 const elListContainer = document.getElementById("list-container");
 
+const elFilterAll = document.getElementById("filter-all");
+const elFilterWrong = document.getElementById("filter-wrong");
+const elFilterUnanswered = document.getElementById("filter-unanswered");
+const elFilterCorrect = document.getElementById("filter-correct");
+
+
 /* modal */
 const elModal = document.getElementById("modal");
 const elModalBackdrop = document.getElementById("modal-backdrop");
@@ -1481,12 +1899,241 @@ const elModalClose = document.getElementById("modal-close");
 const elModalImg = document.getElementById("modal-img");
 const elModalTitle = document.getElementById("modal-title");
 
+function updateContinueButton(){
+  if(!elBtnContinue) return;
+  state.mode = "all";
+  const p = loadShuffleProgress();
+  if(p){
+    elBtnContinue.disabled = false;
+    // p.pos is the next position to resume (1-indexed for display)
+    const n = (p.wrap ? 1 : (Number.isInteger(p.pos) ? (p.pos + 1) : 1));
+    elBtnContinue.textContent = `つづきから（第${n}問）`;
+  } else {
+    elBtnContinue.disabled = true;
+    elBtnContinue.textContent = "つづきから（データなし）";
+  }
+}
+
+
+function updateWrongButton(){
+  if(!elBtnWrong) return;
+  // reload from storage in case user cleared it, etc.
+  WRONG_SERIALS = loadWrongSerials();
+  const n = WRONG_SERIALS.size;
+  if(n > 0){
+    elBtnWrong.disabled = false;
+    elBtnWrong.textContent = `不正解だけを再出題（${n}）`;
+  } else {
+    elBtnWrong.disabled = true;
+    elBtnWrong.textContent = "不正解だけを再出題（0）";
+  }
+}
+
+function updateTitleProgress(){
+  if(!elTitleProgress) return;
+  const total = Array.isArray(QUESTIONS) ? QUESTIONS.length : 0;
+
+  // reload from storage to reflect latest state
+  const correctSet = loadCorrectSerials();
+  const wrongSet = loadWrongSerials();
+
+  const correct = correctSet.size;
+  const wrong = wrongSet.size;
+
+  elTitleProgress.innerHTML =
+    `<span class="chip">正解：${correct}/${total}</span>` +
+    `<span class="chip">不正解：${wrong}問</span>`;
+}
+
+
+function updateDataButtons(){
+  // Enable/disable destructive buttons based on current stored state
+  const correctSet = loadCorrectSerials();
+  const wrongSet = loadWrongSerials();
+
+  if(elBtnResetCorrect){
+    const n = correctSet.size;
+    elBtnResetCorrect.disabled = (n === 0);
+    elBtnResetCorrect.textContent = (n === 0) ? "正解済をリセット（0）長押しで実行" : `正解済をリセット（${n}）長押しで実行`;
+  }
+  if(elBtnClearWrong){
+    const n = wrongSet.size;
+    elBtnClearWrong.disabled = (n === 0);
+    elBtnClearWrong.textContent = (n === 0) ? "不正解をリセット（0）長押しで実行" : `不正解をリセット（${n}）長押しで実行`;
+  }
+}
+
+
+
+
+function lockButton(el, ms = 300){
+  if(!el) return;
+  // Prevent double-taps / rapid clicks
+  if(el.dataset && el.dataset.locked === "1") return;
+  if(el.dataset) el.dataset.locked = "1";
+  el.disabled = true;
+  setTimeout(()=>{
+    try{
+      el.disabled = false;
+      if(el.dataset) delete el.dataset.locked;
+    }catch(e){}
+  }, ms);
+}
+
+function setupHoldToRun(el, onRun, holdMs = 1000){
+  if(!el) return;
+
+  let timer = null;
+  let fired = false;
+
+  const clear = ()=>{
+    if(timer){
+      clearTimeout(timer);
+      timer = null;
+    }
+    try{ el.classList.remove("holding"); }catch(_e){}
+  };
+
+  const start = (ev)=>{
+    if(el.disabled) return;
+    if(timer) return; // already holding
+    fired = false;
+
+    // Prevent long-press context menu on mobile
+    try{ if(ev && ev.type === "contextmenu") ev.preventDefault(); }catch(_e){}
+
+    try{ el.classList.add("holding"); }catch(_e){}
+
+    timer = setTimeout(()=>{
+      fired = true;
+      clear();
+      try{ onRun && onRun(); }catch(_e){}
+    }, holdMs);
+  };
+
+  // Pointer (covers mouse + touch + pen)
+  el.addEventListener("pointerdown", (ev)=>{
+    if(ev.pointerType === "mouse" && ev.button !== 0) return;
+    start(ev);
+  });
+  el.addEventListener("pointerup", clear);
+  el.addEventListener("pointercancel", clear);
+  el.addEventListener("pointerleave", clear);
+
+  // Keyboard (press-and-hold Space/Enter)
+  el.addEventListener("keydown", (ev)=>{
+    if(ev.key === " " || ev.key === "Enter"){
+      if(timer) return;
+      ev.preventDefault();
+      start(ev);
+    }
+  });
+  el.addEventListener("keyup", (ev)=>{
+    if(ev.key === " " || ev.key === "Enter"){
+      // If already fired, ignore. Otherwise cancel.
+      if(!fired) clear();
+    }
+  });
+
+  // Block normal click to avoid accidental execution
+  el.addEventListener("click", (ev)=>{
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+
+  // Block context menu
+  el.addEventListener("contextmenu", (ev)=> ev.preventDefault());
+}
+
+
+
+function markProgressResetNotice(){
+  try{
+    const payload = { v: 1, ts: Date.now() };
+    localStorage.setItem(NOTICE_PROGRESS_RESET_KEY, JSON.stringify(payload));
+  }catch(_e){}
+}
+
+function consumeProgressResetNotice(){
+  try{
+    const raw = localStorage.getItem(NOTICE_PROGRESS_RESET_KEY);
+    if(!raw) return null;
+    localStorage.removeItem(NOTICE_PROGRESS_RESET_KEY);
+    return raw;
+  }catch(_e){
+    return null;
+  }
+}
+
+function showTitleNoticeOnce(){
+  if(!elTitleNotice) return;
+  const raw = consumeProgressResetNotice();
+  if(raw){
+    elTitleNotice.textContent = "保存データが古かったので更新しました";
+    elTitleNotice.classList.remove("hidden");
+  } else {
+    elTitleNotice.classList.add("hidden");
+    elTitleNotice.textContent = "";
+  }
+}
+
 function showScreen(name){
   elTitle.classList.toggle("hidden", name !== "title");
   elList.classList.toggle("hidden", name !== "list");
   elQuiz.classList.toggle("hidden", name !== "quiz");
   elResult.classList.toggle("hidden", name !== "result");
+  elClear && elClear.classList.toggle("hidden", name !== "clear");
+  if(name === "title") { updateContinueButton(); updateWrongButton(); updateTitleProgress(); updateDataButtons(); showTitleNoticeOnce(); }
 }
+
+function showClearScreen(){
+  closeModal();
+  state.clearReady = false;
+  showScreen("clear");
+  window.scrollTo(0, 0);
+}
+
+
+function resetCorrectStatusOnly(){
+  // Reset only correct history (keep wrong list)
+  clearCorrectSerials();
+  // Also reset "continue" so user can restart cleanly
+  clearShuffleProgress();
+  // Reset state (in case)
+  state.mode = "all";
+  state.order = null;
+  state.pos = 0;
+  state.idx = 0;
+}
+
+function clearWrongListOnly(){
+  // Clear only wrong list (keep correct history)
+  WRONG_SERIALS = new Set();
+  saveWrongSerials();
+  // If user was in wrong mode (shouldn't happen from title, but safe)
+  if(state.mode === "wrong"){
+    state.mode = "all";
+    state.order = null;
+    state.pos = 0;
+    state.idx = 0;
+  }
+}
+
+function resetLearningProgress(){
+  // Reset correct history
+  clearCorrectSerials();
+  // Reset wrong list
+  WRONG_SERIALS = new Set();
+  saveWrongSerials();
+  // Reset "continue" progress
+  clearShuffleProgress();
+  // Reset state
+  state.mode = "all";
+  state.order = null;
+  state.pos = 0;
+  state.idx = 0;
+}
+
 
 function escapeHtml(s){
   return String(s)
@@ -1523,10 +2170,36 @@ function renderChoiceInline(choiceStr){
 
 function setProgress(){
   const q = QUESTIONS[state.idx];
-  const base = `第${state.idx+1}問 / ${QUESTIONS.length}`;
+  const serial = (q && typeof q.serial === "number") ? q.serial : (state.idx + 1);
+
+  // List mode (one-off from the problem list)
+  if(state.mode === "list"){
+    const base = `問題一覧・（問題${serial}）`;
+    elProgress.textContent = base;
+    elProgress2.textContent = base;
+    return;
+  }
+
+  // Default: all-questions shuffle run
+  if(state.mode !== "wrong"){
+    const total = QUESTIONS.length;
+    const n = (Array.isArray(state.order) && state.order.length === total) ? (state.pos + 1) : (state.idx + 1);
+    const base = `第${n}問 / 全${total}問・（問題${serial}）`;
+    elProgress.textContent = base;
+    elProgress2.textContent = base;
+    return;
+  }
+
+  // Wrong-only mode
+  const wrongIdxSet = new Set(getWrongIndices());
+  const filtered = Array.isArray(state.order) ? state.order.filter(i => wrongIdxSet.has(i)) : [];
+  const total = filtered.length;
+  const n = total > 0 ? (filtered.indexOf(state.idx) + 1) : 0;
+  const base = `不正解復習 第${n}問 / 全${total}問・（問題${serial}）`;
   elProgress.textContent = base;
   elProgress2.textContent = base;
 }
+
 
 function openModal(src, title){
   elModalTitle.textContent = title || "";
@@ -1573,6 +2246,7 @@ function renderExplainText(text){
 
 function renderExplainMedia(q){
   elExplainMedia.innerHTML = "";
+  let mediaIndex = 0;
   for(const im of (q.explain_images || [])) {
     const block = document.createElement("div");
     block.className = "media-block";
@@ -1581,6 +2255,9 @@ function renderExplainMedia(q){
     lab.textContent = im.label || "";
     const img = document.createElement("img");
     img.className = "media-img";
+    try{ img.decoding = "async"; } catch(e){}
+    // First image tends to be in-view; keep it eager. Others can be lazy.
+    try{ img.loading = (mediaIndex === 0 ? "eager" : "lazy"); } catch(e){}
     img.src = im.src;
     img.alt = im.label || "解説画像";
     // heuristic: B.png => bar
@@ -1591,6 +2268,7 @@ function renderExplainMedia(q){
     block.appendChild(lab);
     block.appendChild(img);
     elExplainMedia.appendChild(block);
+    mediaIndex++;
   }
 }
 
@@ -1606,50 +2284,158 @@ function renderChoices(q){
   }
 }
 
-function renderProblemList(){
+function getProblemStatus(serial, correctSet, wrongSet){
+  // Priority: wrong > correct > unanswered
+  if(wrongSet && wrongSet.has(serial)) return "wrong";
+  if(correctSet && correctSet.has(serial)) return "correct";
+  return "unanswered";
+}
+
+function statusSymbol(status){
+  if(status === "wrong") return "!";
+  if(status === "correct") return "✓";
+  return "●";
+}
+
+function applyListFilterUI(active){
+  const map = {
+    all: elFilterAll,
+    wrong: elFilterWrong,
+    unanswered: elFilterUnanswered,
+    correct: elFilterCorrect,
+  };
+  Object.entries(map).forEach(([k, el])=>{
+    if(!el) return;
+    el.classList.toggle("is-active", k === active);
+  });
+}
+
+function renderProblemList(filter){
   if(!elListContainer) return;
+
+  // Determine filter
+  const active = filter || state.listFilter || "all";
+  state.listFilter = active;
+  applyListFilterUI(active);
+
+  // Reload latest progress sets
+  const correctSet = loadCorrectSerials();
+  const wrongSet = loadWrongSerials();
+
+  // Update filter button labels with counts (nice UX)
+  const total = Array.isArray(QUESTIONS) ? QUESTIONS.length : 0;
+  const wrongCount = wrongSet.size;
+  const correctCount = correctSet.size;
+
+  // unanswered = total - union(correct, wrong), but safest: compute by scan
+  let unansweredCount = 0;
+  for(const q of QUESTIONS){
+    const s = (q && typeof q.serial === "number") ? q.serial : null;
+    if(s == null) continue;
+    const st = getProblemStatus(s, correctSet, wrongSet);
+    if(st === "unanswered") unansweredCount++;
+  }
+
+  if(elFilterAll) elFilterAll.textContent = `全部（${total}）`;
+  if(elFilterWrong) elFilterWrong.textContent = `不正解（${wrongCount}）`;
+  if(elFilterUnanswered) elFilterUnanswered.textContent = `未回答（${unansweredCount}）`;
+  if(elFilterCorrect) elFilterCorrect.textContent = `正解済（${correctCount}）`;
+
   elListContainer.innerHTML = "";
 
-  // Keep insertion order
+  // Keep insertion order, with filter applied
   const catMap = new Map();
   QUESTIONS.forEach((q, i) => {
+    const serial = (q && typeof q.serial === "number") ? q.serial : null;
+    const st = (serial == null) ? "unanswered" : getProblemStatus(serial, correctSet, wrongSet);
+
+    if(active === "wrong" && st !== "wrong") return;
+    if(active === "unanswered" && st !== "unanswered") return;
+    if(active === "correct" && st !== "correct") return;
+
     const cat = (q.category || "未分類").trim();
     if(!catMap.has(cat)) catMap.set(cat, []);
-    catMap.get(cat).push({ q, i });
+    catMap.get(cat).push({ q, i, st });
   });
 
   for(const [cat, arr] of catMap.entries()){
+    if(!arr || arr.length === 0) continue;
+
     const head = document.createElement("div");
     head.className = "list-category";
     head.textContent = `【${cat}】`;
     elListContainer.appendChild(head);
 
-    for(const { q, i } of arr){
+    for(const { q, i, st } of arr){
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn list-item";
 
       const left = document.createElement("div");
-      left.className = "list-item-no";
-      left.textContent = `問題${q.serial}`;
+      left.className = "list-item-left";
+
+      const status = document.createElement("span");
+      status.className = `status status-${st}`;
+      status.textContent = statusSymbol(st);
+
+      const no = document.createElement("span");
+      no.className = "list-item-no";
+      no.textContent = `問題${q.serial}`;
+
+      left.appendChild(status);
+      left.appendChild(no);
       btn.appendChild(left);
 
+      const right = document.createElement("div");
+      right.className = "list-item-sub";
+      if(q && typeof q.theoryNo === "number" && typeof q.problemNo === "number"){
+        right.textContent = `セオリー${q.theoryNo}-${q.problemNo}`;
+      } else {
+        right.textContent = "";
+      }
+      btn.appendChild(right);
+
       btn.addEventListener("click", ()=>{
+        state.mode = "list";
+        // Keep shuffle progress in storage intact; this is a one-off from the list.
+        state.order = null;
+        state.pos = 0;
         state.idx = i;
         loadQuestion();
       });
+
       elListContainer.appendChild(btn);
     }
   }
+
+  // If nothing to show (e.g., filter has 0 results)
+  if(!elListContainer.firstChild){
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    if(active === "wrong") empty.textContent = "不正解の問題はありません。";
+    else if(active === "unanswered") empty.textContent = "未回答の問題はありません。";
+    else if(active === "correct") empty.textContent = "正解済の問題はありません。";
+    else empty.textContent = "表示できる問題がありません。";
+    elListContainer.appendChild(empty);
+  }
 }
 
+
+
 function loadQuestion(){
+  if(elBtnNext){ try{ elBtnNext.disabled = false; if(elBtnNext.dataset) delete elBtnNext.dataset.locked; }catch(e){} }
+  if(elWrongDone) elWrongDone.classList.add("hidden");
+  state.clearReady = false;
+  state.nextAction = "next";
+  if(elBtnNext) elBtnNext.textContent = "次の問題へ";
   state.selected = null;
   const q = QUESTIONS[state.idx];
   if (elPrompt) elPrompt.textContent = q.prompt || "";
   setProgress();
 
+  try{ elQImage.decoding = "async"; } catch(e){}
   elQImage.src = q.question_image;
+  preloadNextQuestionImage();
   elBtnQImg.onclick = () => openModal(q.question_image, "出題画像");
 
   renderChoices(q);
@@ -1658,7 +2444,64 @@ function loadQuestion(){
 
 function showResult(isCorrect){
   const q = QUESTIONS[state.idx];
+
   setProgress();
+
+  if(elBtnNext){ try{ elBtnNext.disabled = false; if(elBtnNext.dataset) delete elBtnNext.dataset.locked; }catch(e){} }
+
+// Update wrong-list / correct-list memory
+const serial = (q && typeof q.serial === "number") ? q.serial : null;
+if(serial != null){
+  if(isCorrect){
+    removeWrongSerial(serial);
+    addCorrectSerial(serial);
+  } else {
+    addWrongSerial(serial);
+  }
+}
+
+// 全問正解達成チェック（解説を読んだあとにクリア画面へ）
+state.clearReady = !!(isCorrect && isAllCorrect());
+
+// 次へボタンの挙動を決定（バグ回避＋UX改善）
+state.nextAction = "next";
+if(state.clearReady){
+  state.nextAction = "clear";
+  if(elBtnNext) elBtnNext.textContent = "クリア画面へ";
+} else if(state.mode === "wrong"){
+  // 念のためストレージから再読込（他タブ変更などにも強くする）
+  WRONG_SERIALS = loadWrongSerials();
+  if(WRONG_SERIALS.size === 0){
+    state.nextAction = "home";
+    if(elBtnNext) elBtnNext.textContent = "タイトルに戻る";
+  } else {
+    if(elBtnNext) elBtnNext.textContent = "次の問題へ";
+  }
+} else if(state.mode === "list"){
+  // One-off from problem list: don't mix with shuffle progress.
+  state.nextAction = "home";
+  if(elBtnNext) elBtnNext.textContent = "タイトルに戻る";
+} else {
+  if(elBtnNext) elBtnNext.textContent = "次の問題へ";
+}
+
+
+
+  // Wrong-only completion message (no modal, no extra clicks)
+  if(elWrongDone){
+    if(state.mode === "wrong" && !state.clearReady){
+      // reload from storage to be robust
+      const ws = loadWrongSerials();
+      if(ws.size === 0 && isCorrect){
+        elWrongDone.textContent = "不正解リストが空になったよ。ナイス！";
+        elWrongDone.classList.remove("hidden");
+      } else {
+        elWrongDone.classList.add("hidden");
+      }
+    } else {
+      elWrongDone.classList.add("hidden");
+    }
+  }
 
   elResultBadge.className = "result-badge " + (isCorrect ? "ok" : "ng");
   elResultBadge.textContent = isCorrect ? "正解！" : "不正解";
@@ -1685,6 +2528,10 @@ function showResult(isCorrect){
 
   renderExplainMedia(q);
   showScreen("result");
+
+  // Mark this question as "done" for the continue feature.
+  // After reaching the explanation screen, "continue" should resume from the next question.
+  if(state.mode === "all") saveNextShuffleProgress();
 }
 
 function onSelectChoice(choice){
@@ -1706,12 +2553,30 @@ elBtnMore.addEventListener("click", ()=>{
 });
 
 elBtnStart.addEventListener("click", ()=>{
-  state.idx = 0;
+  state.mode = "all";
+  startShuffleRun();
   loadQuestion();
 });
 
+elBtnContinue && elBtnContinue.addEventListener("click", ()=>{
+  const p = loadShuffleProgress();
+  if(!p) return;
+  if(!applyShuffleProgress(p)) return;
+  loadQuestion();
+});
+
+
+elBtnWrong && elBtnWrong.addEventListener("click", ()=>{
+  closeModal();
+  // Wrong-only mode: no continue, always start fresh.
+  if(!startWrongRun()) return;
+  loadQuestion();
+});
+
+
 elBtnList.addEventListener("click", ()=>{
-  renderProblemList();
+  state.listFilter = "all";
+  renderProblemList("all");
   showScreen("list");
   window.scrollTo(0, 0);
 });
@@ -1721,14 +2586,82 @@ elBtnListBack.addEventListener("click", ()=>{
   window.scrollTo(0, 0);
 });
 
+setupHoldToRun(elBtnResetCorrect, ()=>{
+  resetCorrectStatusOnly();
+  // refresh title UI
+  updateContinueButton();
+  updateWrongButton();
+  updateTitleProgress();
+  updateDataButtons();
+  window.scrollTo(0, 0);
+}, 1000);
+
+setupHoldToRun(elBtnClearWrong, ()=>{
+  clearWrongListOnly();
+  // refresh title UI
+  updateContinueButton();
+  updateWrongButton();
+  updateTitleProgress();
+  updateDataButtons();
+  window.scrollTo(0, 0);
+}, 1000);
+elBtnQuizHome && elBtnQuizHome.addEventListener("click", ()=>{
+  // Stop current flow and return to title.
+  // Only save "continue" progress for shuffle mode.
+  if(state.mode === "all") saveShuffleProgress();
+  showScreen("title");
+  window.scrollTo(0, 0);
+});
+
+
+// List filter buttons
+elFilterAll && elFilterAll.addEventListener("click", ()=>{ renderProblemList("all"); window.scrollTo(0, 0); });
+elFilterWrong && elFilterWrong.addEventListener("click", ()=>{ renderProblemList("wrong"); window.scrollTo(0, 0); });
+elFilterUnanswered && elFilterUnanswered.addEventListener("click", ()=>{ renderProblemList("unanswered"); window.scrollTo(0, 0); });
+elFilterCorrect && elFilterCorrect.addEventListener("click", ()=>{ renderProblemList("correct"); window.scrollTo(0, 0); });
+
+
+// Clear screen buttons
+elBtnClearHome && elBtnClearHome.addEventListener("click", ()=>{
+  showScreen("title");
+  window.scrollTo(0, 0);
+});
+
+elBtnClearReset && elBtnClearReset.addEventListener("click", ()=>{
+  resetLearningProgress();
+  showScreen("title");
+  window.scrollTo(0, 0);
+});
+
+
 elBtnHome.addEventListener("click", ()=>{
+  if(state.clearReady){
+    showClearScreen();
+    return;
+  }
   closeModal();
   showScreen("title");
   window.scrollTo(0, 0);
 });
 
 elBtnNext.addEventListener("click", ()=>{
-  state.idx = (state.idx + 1) % QUESTIONS.length;
+  lockButton(elBtnNext, 300);
+  if(state.clearReady){
+    showClearScreen();
+    return;
+  }
+
+  // 不正解だけモードで、もう不正解が無い場合はタイトルへ
+  if(state.nextAction === "home"){
+    showScreen("title");
+    return;
+  }
+
+  const ok = nextInCurrentRun();
+  if(ok === false){
+    showScreen("title");
+    return;
+  }
   loadQuestion();
 });
 
